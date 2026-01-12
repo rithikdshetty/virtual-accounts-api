@@ -1,0 +1,1504 @@
+openapi: 3.1.0
+info:
+  title: Virtual Accounts API
+  version: 0.1.2
+  summary: REST API for virtual accounts on a master FBO with a double-entry ledger.
+  description: |
+    The Virtual Accounts API exposes programmatic access to customer-facing
+    virtual accounts that map to a single underlying For Benefit Of (FBO) bank
+    account. All customer balances are tracked as liability positions on an
+    internal double-entry ledger. The sum of customer liabilities is invariant
+    against the FBO cash position at all times.
+
+    ## Core concepts
+
+    - **Master FBO**: A single bank account held by the operator, for the
+      benefit of end customers. All cash sits here.
+    - **Virtual account**: A customer-facing account identifier that maps to a
+      liability position on the internal ledger. No money physically moves
+      between virtual accounts. Movements are recorded as paired journal
+      entries that net to zero.
+    - **Transfer**: An internal movement between two virtual accounts. Posts
+      atomically. Cannot fail partially.
+    - **Deposit**: External funds in (ACH, wire, RTP). Increases FBO cash and
+      the destination virtual account liability.
+    - **Withdrawal**: External funds out. Decreases FBO cash and the source
+      virtual account liability.
+
+    ## Money representation
+
+    All amounts are integer minor units of the account currency (e.g. cents
+    for USD, pence for GBP). Floats are never used. Every amount field is
+    paired with an ISO 4217 currency code via the `Money` object.
+
+    ## Timestamps
+
+    Every timestamp is UTC, ISO 8601, with a `Z` suffix. Naive timestamps
+    are rejected. The API does not accept or return local timezones; convert
+    on the client.
+
+    ## Idempotency
+
+    All POST endpoints require an `Idempotency-Key` header. Any opaque
+    string up to 255 chars is valid. The server stores the request hash and
+    response for 24 hours. Replaying the same key with the same request body
+    returns the cached response. Replaying with a different body returns 409
+    Conflict. The key is echoed in the response body as `idempotency_key` so
+    clients can confirm whether a request was newly executed or replayed.
+
+    ## Pagination
+
+    List endpoints use cursor-based pagination. Pass `limit` (max 100, default
+    25) and either `starting_after` or `ending_before` cursor. Responses
+    include `has_more` and `next_cursor`.
+
+    ## Authentication
+
+    Bearer token via the `Authorization` header. Separate keys for sandbox
+    and live environments. Live keys are scoped per environment and rotated
+    on demand.
+
+    ## Request tracing
+
+    Every response includes a `Request-Id` header (UUID). Quote it when
+    asking for support. Errors also include it in the response body for
+    convenience.
+
+    ## Currency lock
+
+    An account is created against a single currency and that currency
+    cannot be changed. To support a customer in multiple currencies, create
+    multiple accounts. FX between accounts is out of scope for v0.1 (see
+    NOTES.md).
+
+    ## Account closure
+
+    Closed accounts retain read access indefinitely (GET balance, GET
+    transactions, GET account itself) but reject all mutating operations.
+    Balance must be zero before transitioning to `closed`.
+
+    ## Transaction limits
+
+    Per-rail limits apply to deposits and withdrawals. Internal transfers
+    are limited only by source balance. v0.1 enforces these limits server-
+    side but does not expose them as a discoverable endpoint; that is on the
+    v0.2 roadmap. Current limits:
+
+    - ACH: $1.00 minimum, $25,000 maximum per transaction
+    - Wire: $100.00 minimum, no upper bound (subject to bank partner)
+    - RTP: $1.00 minimum, $1,000,000 maximum per transaction
+    - Internal transfers: $0.01 minimum, no upper bound
+
+    ## Webhooks
+
+    Webhook deliveries are signed with HMAC-SHA256. The `Webhook-Signature`
+    header contains a timestamp and signature in the form
+    `t=<unix_timestamp>,v1=<hex_hmac>`. Receivers must compute
+    `HMAC_SHA256(secret, timestamp + '.' + raw_body)` and compare in
+    constant time.
+
+    To prevent replay, receivers should reject deliveries where the
+    timestamp differs from current time by more than 5 minutes. The sender
+    uses its own clock; clients should run NTP.
+
+    Failed deliveries retry with exponential backoff (1s, 2s, 4s, ..., capped
+    at 1 hour) for up to 24 hours, then dead-letter. The `/events` endpoint
+    lets consumers replay missed events without depending on push delivery
+    succeeding.
+
+  contact:
+    name: API Support
+    email: api@example.com
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.example.com/v1
+    description: Production
+  - url: https://sandbox.example.com/v1
+    description: Sandbox
+
+tags:
+  - name: Accounts
+    description: Virtual account lifecycle.
+  - name: Transfers
+    description: Internal movements between virtual accounts.
+  - name: Deposits
+    description: External funds into a virtual account.
+  - name: Withdrawals
+    description: External funds out of a virtual account.
+  - name: Webhooks
+    description: Event subscription management.
+
+security:
+  - bearerAuth: []
+
+paths:
+  /accounts:
+    post:
+      tags: [Accounts]
+      summary: Create a virtual account
+      description: |
+        Creates a new virtual account in the specified currency. Account
+        starts in `pending` status and transitions to `active` once
+        verification (when configured) completes. New accounts have a zero
+        balance.
+      operationId: createAccount
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountCreateRequest'
+      responses:
+        '201':
+          description: Account created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/IdempotencyConflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+    get:
+      tags: [Accounts]
+      summary: List virtual accounts
+      operationId: listAccounts
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/StartingAfter'
+        - $ref: '#/components/parameters/EndingBefore'
+        - name: customer_id
+          in: query
+          description: Filter by external customer identifier.
+          schema:
+            type: string
+        - name: status
+          in: query
+          description: Filter by account status.
+          schema:
+            $ref: '#/components/schemas/AccountStatus'
+      responses:
+        '200':
+          description: List of accounts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /accounts/{account_id}:
+    parameters:
+      - $ref: '#/components/parameters/AccountId'
+    get:
+      tags: [Accounts]
+      summary: Retrieve a virtual account
+      operationId: getAccount
+      responses:
+        '200':
+          description: Account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    patch:
+      tags: [Accounts]
+      summary: Update a virtual account
+      description: |
+        Mutates metadata and status. Status transitions are constrained:
+        `active` <-> `frozen` is allowed; `closed` is terminal.
+      operationId: updateAccount
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountUpdateRequest'
+      responses:
+        '200':
+          description: Updated account
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Invalid status transition
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /accounts/{account_id}/balance:
+    parameters:
+      - $ref: '#/components/parameters/AccountId'
+    get:
+      tags: [Accounts]
+      summary: Retrieve current balance
+      description: |
+        Returns the live balance computed from the ledger. The `available`
+        balance excludes funds locked in pending outbound transfers and
+        pending withdrawals. The `posted` balance includes only posted
+        ledger entries.
+      operationId: getAccountBalance
+      responses:
+        '200':
+          description: Balance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Balance'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /accounts/{account_id}/transactions:
+    parameters:
+      - $ref: '#/components/parameters/AccountId'
+    get:
+      tags: [Accounts]
+      summary: List account transactions
+      description: |
+        Returns one row per ledger movement on the account, ordered by posting
+        time descending. Includes deposits, withdrawals, transfer legs, and
+        reversals.
+      operationId: listAccountTransactions
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/StartingAfter'
+        - $ref: '#/components/parameters/EndingBefore'
+        - name: type
+          in: query
+          schema:
+            $ref: '#/components/schemas/TransactionType'
+      responses:
+        '200':
+          description: Transactions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /transfers:
+    post:
+      tags: [Transfers]
+      summary: Create a transfer between virtual accounts
+      description: |
+        Posts a transfer atomically. Source and destination must share the
+        same currency. Insufficient funds returns 422 with code
+        `insufficient_funds`. Transfers cannot be edited; to undo, post a
+        reversal via this endpoint with `reverses_transfer_id` set.
+      operationId: createTransfer
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransferCreateRequest'
+      responses:
+        '201':
+          description: Transfer created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transfer'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/IdempotencyConflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+    get:
+      tags: [Transfers]
+      summary: List transfers
+      operationId: listTransfers
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/StartingAfter'
+        - $ref: '#/components/parameters/EndingBefore'
+        - name: account_id
+          in: query
+          description: Returns transfers where this account is source or destination.
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/TransferStatus'
+      responses:
+        '200':
+          description: Transfers
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransferList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /transfers/{transfer_id}:
+    parameters:
+      - name: transfer_id
+        in: path
+        required: true
+        schema:
+          type: string
+        example: tfr_01J0F4M5N7P9Q1R3S5T7V9W1X3
+    get:
+      tags: [Transfers]
+      summary: Retrieve a transfer
+      operationId: getTransfer
+      responses:
+        '200':
+          description: Transfer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transfer'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /transfers/{transfer_id}/reversal:
+    parameters:
+      - name: transfer_id
+        in: path
+        required: true
+        schema:
+          type: string
+        example: tfr_01J0F4M5N7P9Q1R3S5T7V9W1X3
+    post:
+      tags: [Transfers]
+      summary: Reverse a posted transfer
+      description: |
+        Posts a new transfer that inverts the source and destination of the
+        original. Reversals are full-value only; partial reversals are not
+        supported in v0.1. The destination account of the original (now the
+        source of the reversal) must have sufficient balance; if it has been
+        spent down since posting, the reversal fails with
+        `insufficient_funds` and the operator must reconcile manually.
+
+        Reversals cannot be reversed. Attempting to call this endpoint on a
+        transfer that is itself a reversal returns 422 with code
+        `cannot_reverse_reversal`.
+
+        The original transfer transitions to `reversed` status when the
+        reversal posts.
+      operationId: reverseTransfer
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                description:
+                  type: string
+                metadata:
+                  type: object
+                  additionalProperties:
+                    type: string
+      responses:
+        '201':
+          description: Reversal posted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transfer'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/IdempotencyConflict'
+        '422':
+          description: |
+            Cannot reverse. Possible codes:
+            - `cannot_reverse_reversal`
+            - `transfer_not_posted`
+            - `insufficient_funds`
+            - `account_closed`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /deposits:
+    post:
+      tags: [Deposits]
+      summary: Record an external deposit
+      description: |
+        Records inbound external funds (ACH credit, wire, RTP) into a virtual
+        account. Increases FBO cash and the destination account liability.
+        In a live integration, this endpoint is called by the bank webhook
+        consumer once funds are confirmed received.
+      operationId: createDeposit
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DepositCreateRequest'
+      responses:
+        '201':
+          description: Deposit recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Deposit'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/IdempotencyConflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /deposits/{deposit_id}:
+    parameters:
+      - name: deposit_id
+        in: path
+        required: true
+        schema:
+          type: string
+        example: dep_01J0F5Y2Z4A6B8C0D2E4F6G8H0
+    get:
+      tags: [Deposits]
+      summary: Retrieve a deposit
+      operationId: getDeposit
+      responses:
+        '200':
+          description: Deposit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Deposit'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /withdrawals:
+    post:
+      tags: [Withdrawals]
+      summary: Initiate an external withdrawal
+      description: |
+        Initiates an outbound payment from a virtual account. The customer
+        liability is reduced immediately (or held, depending on rail). FBO
+        cash decreases when the bank confirms send. Status progresses
+        `pending` -> `posted` (or `failed` with `failure_code`).
+      operationId: createWithdrawal
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WithdrawalCreateRequest'
+      responses:
+        '201':
+          description: Withdrawal initiated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Withdrawal'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/IdempotencyConflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /withdrawals/{withdrawal_id}:
+    parameters:
+      - name: withdrawal_id
+        in: path
+        required: true
+        schema:
+          type: string
+        example: wdr_01J0F6J3K5L7M9N1P3Q5R7S9T1
+    get:
+      tags: [Withdrawals]
+      summary: Retrieve a withdrawal
+      operationId: getWithdrawal
+      responses:
+        '200':
+          description: Withdrawal
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Withdrawal'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /events:
+    # TODO(v0.2): consider exposing event payload schemas explicitly per
+    # event type using oneOf + discriminator on `type`. Right now `data` is
+    # typed as a generic object, which is honest but loses static safety
+    # for SDK generators. Will revisit once the FastAPI implementation
+    # forces a decision.
+    get:
+      tags: [Webhooks]
+      summary: List events (webhook replay)
+      description: |
+        **Note**: this endpoint is experimental and may change without notice.
+
+        Returns the same event objects that are pushed via webhooks, in
+        reverse chronological order. Use this to recover from extended
+        webhook consumer outages or to backfill a new event consumer.
+
+        Events are retained for 30 days. After 30 days they are pruned and
+        return 404 if referenced by ID.
+
+        Tip: combine `event_type` and `created_after` to scope a replay to
+        a specific outage window.
+      operationId: listEvents
+      x-stability: experimental
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/StartingAfter'
+        - $ref: '#/components/parameters/EndingBefore'
+        - name: event_type
+          in: query
+          description: Filter by event type. Repeatable.
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/EventType'
+          style: form
+          explode: true
+        - name: created_after
+          in: query
+          description: Inclusive lower bound. UTC ISO 8601.
+          schema:
+            type: string
+            format: date-time
+        - name: created_before
+          in: query
+          description: Exclusive upper bound. UTC ISO 8601.
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Events
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /events/{event_id}:
+    parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: string
+        example: evt_01J0F8V5W7X9Y1Z3A5B7C9D1E3
+    get:
+      tags: [Webhooks]
+      summary: Retrieve a single event
+      description: |
+        **Note**: this endpoint is experimental and may change without notice.
+
+        Returns a single event by ID. Events are retained for 30 days; older
+        event IDs return 404.
+      operationId: getEvent
+      x-stability: experimental
+      responses:
+        '200':
+          description: Event
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Event'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /healthz:
+    get:
+      summary: Liveness probe
+      description: |
+        Returns 200 if the API process is up. Does not check downstream
+        dependencies (DB, bank partner); for that, see `/readyz` (not yet
+        exposed publicly).
+      operationId: healthz
+      security: []
+      responses:
+        '200':
+          description: Alive
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: ok
+                  version:
+                    type: string
+                    example: 0.1.2
+
+  /webhook_endpoints:
+    post:
+      tags: [Webhooks]
+      summary: Register a webhook endpoint
+      description: |
+        Registers a URL to receive event notifications. The response includes
+        a `secret` used to sign deliveries. The secret is returned exactly
+        once and cannot be retrieved again.
+      operationId: createWebhookEndpoint
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookEndpointCreateRequest'
+      responses:
+        '201':
+          description: Webhook endpoint registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpointWithSecret'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/IdempotencyConflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+    get:
+      tags: [Webhooks]
+      summary: List webhook endpoints
+      operationId: listWebhookEndpoints
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/StartingAfter'
+        - $ref: '#/components/parameters/EndingBefore'
+      responses:
+        '200':
+          description: Webhook endpoints
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpointList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /webhook_endpoints/{endpoint_id}:
+    parameters:
+      - name: endpoint_id
+        in: path
+        required: true
+        schema:
+          type: string
+        example: whk_01J0F7B4C6D8E0F2G4H6J8K0L2
+    get:
+      tags: [Webhooks]
+      summary: Retrieve a webhook endpoint
+      operationId: getWebhookEndpoint
+      responses:
+        '200':
+          description: Webhook endpoint
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpoint'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [Webhooks]
+      summary: Delete a webhook endpoint
+      description: |
+        Removes the endpoint. Pending deliveries are cancelled. Historical
+        delivery records remain queryable for 30 days.
+      operationId: deleteWebhookEndpoint
+      responses:
+        '204':
+          description: Deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+webhooks:
+  account.created:
+    post:
+      summary: Sent when a new virtual account is created.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Event'
+      responses:
+        '200':
+          description: Acknowledged.
+
+  account.status_changed:
+    post:
+      summary: Sent when an account status transitions (e.g. active -> frozen).
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Event'
+      responses:
+        '200':
+          description: Acknowledged.
+
+  transfer.posted:
+    post:
+      summary: Sent when a transfer posts to the ledger.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Event'
+      responses:
+        '200':
+          description: Acknowledged.
+
+  transfer.failed:
+    post:
+      summary: Sent when a transfer fails validation or insufficient funds.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Event'
+      responses:
+        '200':
+          description: Acknowledged.
+
+  deposit.posted:
+    post:
+      summary: Sent when an external deposit posts to a virtual account.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Event'
+      responses:
+        '200':
+          description: Acknowledged.
+
+  withdrawal.posted:
+    post:
+      summary: Sent when an external withdrawal is confirmed sent.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Event'
+      responses:
+        '200':
+          description: Acknowledged.
+
+  withdrawal.failed:
+    post:
+      summary: Sent when an external withdrawal is rejected by the bank rail.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Event'
+      responses:
+        '200':
+          description: Acknowledged.
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+      description: API key issued per environment. Pass as `Authorization Bearer <key>`.
+
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Client-generated identifier scoped to the API key. UUIDs are
+        recommended but any opaque string up to 255 chars is accepted, so
+        clients can reuse their own internal request IDs. Replays within 24
+        hours return the original response. Replaying the same key with a
+        different request body returns 409.
+
+        Note: keys are scoped per API key. Two different integrations using
+        the same UUID will not collide.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+      example: 6f8b7a2e-0e2a-4d8a-9f6c-3a1b2c4d5e6f
+
+    AccountId:
+      name: account_id
+      in: path
+      required: true
+      schema:
+        type: string
+      example: acct_01J0F2H8X3K7M9P2Q4R6T8V0W1
+
+    Limit:
+      name: limit
+      in: query
+      description: Page size. Max 100, default 25.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 25
+
+    StartingAfter:
+      name: starting_after
+      in: query
+      description: Cursor for the previous page boundary. Exclusive.
+      schema:
+        type: string
+
+    EndingBefore:
+      name: ending_before
+      in: query
+      description: Cursor for the next page boundary. Exclusive.
+      schema:
+        type: string
+
+  responses:
+    BadRequest:
+      description: Malformed request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    Unauthorized:
+      description: Missing or invalid API key.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    NotFound:
+      description: Resource not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    IdempotencyConflict:
+      description: |
+        Idempotency-Key replayed with a different request body within the
+        24-hour window.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    ValidationError:
+      description: Request body failed validation, or a business rule rejected the request (e.g. insufficient funds).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    Currency:
+      type: string
+      description: ISO 4217 currency code.
+      pattern: '^[A-Z]{3}$'
+      example: USD
+
+    # NOTE: I drafted a `Money` object wrapping {amount, currency} and decided
+    # against it for v0.1. Resources already have currency at the top level
+    # (account currency is the source of truth) so embedding a Money object
+    # on every amount field would duplicate that signal without adding
+    # safety. Revisit if we add multi-currency operations.
+
+    AccountStatus:
+      type: string
+      enum: [pending, active, frozen, closed]
+      description: |
+        - `pending`: Created but not yet verified for use.
+        - `active`: Live and transactable.
+        - `frozen`: Blocks new transfers; existing balance preserved.
+        - `closed`: Terminal. Balance must be zero before closing.
+
+    Account:
+      type: object
+      required: [id, object, customer_id, currency, status, livemode, created_at]
+      properties:
+        id:
+          type: string
+          description: Unique identifier, ULID/UUIDv7 prefixed with resource type.
+          example: acct_01J0F2H8X3K7M9P2Q4R6T8V0W1
+        object:
+          type: string
+          const: account
+        customer_id:
+          type: string
+          description: External customer reference supplied by the caller.
+          example: cus_8a3f
+        currency:
+          $ref: '#/components/schemas/Currency'
+        status:
+          $ref: '#/components/schemas/AccountStatus'
+        livemode:
+          type: boolean
+          description: True if produced against live data, false for sandbox.
+        metadata:
+          type: object
+          description: Key-value tags. Up to 50 keys, values up to 500 chars.
+          additionalProperties:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    AccountCreateRequest:
+      type: object
+      required: [customer_id, currency]
+      properties:
+        customer_id:
+          type: string
+        currency:
+          $ref: '#/components/schemas/Currency'
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+
+    AccountUpdateRequest:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [active, frozen, closed]
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+
+    AccountList:
+      allOf:
+        - $ref: '#/components/schemas/ListResponse'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/Account'
+
+    Balance:
+      type: object
+      required: [account_id, currency, available, posted, as_of]
+      properties:
+        account_id:
+          type: string
+        currency:
+          $ref: '#/components/schemas/Currency'
+        available:
+          type: integer
+          format: int64
+          description: |
+            Posted balance minus the sum of pending withdrawals against this
+            account. Internal transfers post synchronously and do not create
+            holds, so they affect `posted` directly. Pending deposits do NOT
+            increase available balance until they post.
+        posted:
+          type: integer
+          format: int64
+          description: Sum of all posted ledger entries.
+        as_of:
+          type: string
+          format: date-time
+
+    TransactionType:
+      type: string
+      enum: [deposit, withdrawal, transfer_in, transfer_out, reversal]
+
+    Transaction:
+      type: object
+      required: [id, object, account_id, type, amount, currency, balance_after, posted_at]
+      properties:
+        id:
+          type: string
+          example: txn_01J0F3A2B4C6D8E0F2G4H6J8K0
+        object:
+          type: string
+          const: transaction
+        account_id:
+          type: string
+        type:
+          $ref: '#/components/schemas/TransactionType'
+        amount:
+          type: integer
+          format: int64
+          description: Signed minor units. Positive credits the account, negative debits.
+        currency:
+          $ref: '#/components/schemas/Currency'
+        balance_after:
+          type: integer
+          format: int64
+          description: Posted balance immediately after this entry.
+        related_transfer_id:
+          type: string
+          nullable: true
+        related_deposit_id:
+          type: string
+          nullable: true
+        related_withdrawal_id:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        posted_at:
+          type: string
+          format: date-time
+
+    TransactionList:
+      allOf:
+        - $ref: '#/components/schemas/ListResponse'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/Transaction'
+
+    TransferStatus:
+      type: string
+      enum: [posted, failed, reversed]
+      description: |
+        Internal transfers post synchronously. `pending` is not used for
+        internal transfers (it applies only to external rails). `failed` is
+        terminal. `reversed` indicates a reversal transfer was posted against
+        this one.
+
+    Transfer:
+      type: object
+      required: [id, object, source_account_id, destination_account_id, amount, currency, status, livemode, created_at]
+      properties:
+        id:
+          type: string
+          example: tfr_01J0F4M5N7P9Q1R3S5T7V9W1X3
+        object:
+          type: string
+          const: transfer
+        source_account_id:
+          type: string
+        destination_account_id:
+          type: string
+        amount:
+          type: integer
+          format: int64
+          description: Unsigned minor units transferred.
+        currency:
+          $ref: '#/components/schemas/Currency'
+        status:
+          $ref: '#/components/schemas/TransferStatus'
+        livemode:
+          type: boolean
+        reverses_transfer_id:
+          type: string
+          nullable: true
+          description: If set, this transfer reverses the referenced original transfer.
+        failure_code:
+          type: string
+          nullable: true
+          enum: [insufficient_funds, currency_mismatch, account_frozen, account_closed, same_account]
+        description:
+          type: string
+          nullable: true
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+        idempotency_key:
+          type: string
+          description: Echoed from the request header for client-side replay confirmation.
+        created_at:
+          type: string
+          format: date-time
+        posted_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    TransferCreateRequest:
+      type: object
+      required: [source_account_id, destination_account_id, amount]
+      properties:
+        source_account_id:
+          type: string
+        destination_account_id:
+          type: string
+        amount:
+          type: integer
+          format: int64
+          minimum: 1
+          description: |
+            Unsigned minor units. Currency is implied by the source account
+            and must match the destination account; mismatched currencies
+            fail with `currency_mismatch`.
+        description:
+          type: string
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+
+    TransferList:
+      allOf:
+        - $ref: '#/components/schemas/ListResponse'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/Transfer'
+
+    DepositStatus:
+      type: string
+      enum: [pending, posted, failed]
+
+    Deposit:
+      type: object
+      required: [id, object, account_id, amount, currency, status, livemode, created_at]
+      properties:
+        id:
+          type: string
+          example: dep_01J0F5Y2Z4A6B8C0D2E4F6G8H0
+        object:
+          type: string
+          const: deposit
+        account_id:
+          type: string
+        amount:
+          type: integer
+          format: int64
+        currency:
+          $ref: '#/components/schemas/Currency'
+        status:
+          $ref: '#/components/schemas/DepositStatus'
+        livemode:
+          type: boolean
+        source_reference:
+          type: string
+          description: External reference from the bank rail (e.g. wire IMAD, ACH trace number).
+        rail:
+          type: string
+          enum: [ach, wire, rtp, internal_test]
+        idempotency_key:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        posted_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    DepositCreateRequest:
+      type: object
+      required: [account_id, amount, currency, rail]
+      properties:
+        account_id:
+          type: string
+        amount:
+          type: integer
+          format: int64
+          minimum: 1
+        currency:
+          $ref: '#/components/schemas/Currency'
+        rail:
+          type: string
+          enum: [ach, wire, rtp, internal_test]
+        source_reference:
+          type: string
+
+    WithdrawalStatus:
+      type: string
+      enum: [pending, posted, failed]
+
+    Withdrawal:
+      type: object
+      required: [id, object, account_id, amount, currency, status, rail, livemode, created_at]
+      properties:
+        id:
+          type: string
+          example: wdr_01J0F6J3K5L7M9N1P3Q5R7S9T1
+        object:
+          type: string
+          const: withdrawal
+        account_id:
+          type: string
+        amount:
+          type: integer
+          format: int64
+        currency:
+          $ref: '#/components/schemas/Currency'
+        status:
+          $ref: '#/components/schemas/WithdrawalStatus'
+        livemode:
+          type: boolean
+        rail:
+          type: string
+          enum: [ach, wire, rtp, internal_test]
+        destination_reference:
+          type: string
+          description: Opaque token referencing a pre-validated destination instrument.
+        failure_code:
+          type: string
+          nullable: true
+          enum: [insufficient_funds, account_frozen, rail_rejected, invalid_destination]
+        idempotency_key:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        posted_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    WithdrawalCreateRequest:
+      type: object
+      required: [account_id, amount, currency, rail, destination_reference]
+      properties:
+        account_id:
+          type: string
+        amount:
+          type: integer
+          format: int64
+          minimum: 1
+        currency:
+          $ref: '#/components/schemas/Currency'
+        rail:
+          type: string
+          enum: [ach, wire, rtp, internal_test]
+        destination_reference:
+          type: string
+
+    WebhookEndpoint:
+      type: object
+      required: [id, object, url, event_types, status, created_at]
+      properties:
+        id:
+          type: string
+          example: whk_01J0F7B4C6D8E0F2G4H6J8K0L2
+        object:
+          type: string
+          const: webhook_endpoint
+        url:
+          type: string
+          format: uri
+        event_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/EventType'
+        status:
+          type: string
+          enum: [active, disabled]
+        created_at:
+          type: string
+          format: date-time
+
+    WebhookEndpointWithSecret:
+      allOf:
+        - $ref: '#/components/schemas/WebhookEndpoint'
+        - type: object
+          required: [secret]
+          properties:
+            secret:
+              type: string
+              description: |
+                HMAC signing secret. Returned exactly once at creation. Store
+                it securely; it cannot be retrieved again. Rotate by deleting
+                and recreating the endpoint.
+
+    WebhookEndpointCreateRequest:
+      type: object
+      required: [url, event_types]
+      properties:
+        url:
+          type: string
+          format: uri
+        event_types:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/EventType'
+
+    WebhookEndpointList:
+      allOf:
+        - $ref: '#/components/schemas/ListResponse'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/WebhookEndpoint'
+
+    EventType:
+      type: string
+      enum:
+        - account.created
+        - account.status_changed
+        - transfer.posted
+        - transfer.failed
+        - deposit.posted
+        - withdrawal.posted
+        - withdrawal.failed
+
+    Event:
+      type: object
+      required: [id, object, type, livemode, created_at, data]
+      properties:
+        id:
+          type: string
+          example: evt_01J0F8V5W7X9Y1Z3A5B7C9D1E3
+        object:
+          type: string
+          const: event
+        type:
+          $ref: '#/components/schemas/EventType'
+        livemode:
+          type: boolean
+          description: True if the event was produced against live data, false for sandbox.
+        created_at:
+          type: string
+          format: date-time
+        data:
+          type: object
+          description: |
+            The resource snapshot at the time of the event. Shape matches the
+            resource referenced by the event type (e.g. `Transfer` for
+            `transfer.posted`).
+
+    EventList:
+      allOf:
+        - $ref: '#/components/schemas/ListResponse'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/Event'
+
+    ListResponse:
+      type: object
+      required: [object, data, has_more]
+      properties:
+        object:
+          type: string
+          const: list
+        data:
+          type: array
+        has_more:
+          type: boolean
+        next_cursor:
+          type: string
+          nullable: true
+
+    Error:
+      type: object
+      description: |
+        RFC 7807 problem details with API-specific extensions. `code` is the
+        stable machine-readable identifier; clients should branch on `code`,
+        not `title` or `detail`.
+      required: [type, title, status, code]
+      properties:
+        type:
+          type: string
+          format: uri
+          description: A URI reference identifying the error class.
+          example: https://api.example.com/errors/insufficient_funds
+        title:
+          type: string
+          example: Insufficient funds
+        status:
+          type: integer
+          example: 422
+        detail:
+          type: string
+          example: Source account balance is 5000 USD minor units; transfer requested 12500.
+        instance:
+          type: string
+          description: URI of the specific failing request.
+        code:
+          type: string
+          example: insufficient_funds
+        request_id:
+          type: string
+          description: Opaque ID for support traceability.
+        errors:
+          type: array
+          description: Field-level errors when applicable.
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              code:
+                type: string
+              message:
+                type: string
