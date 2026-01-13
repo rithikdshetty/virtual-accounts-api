@@ -102,7 +102,7 @@ answer with a real bank partner.
 GitHub Pages serves `/docs/index.html`, which loads `openapi.yaml` via
 Redoc from the CDN. No build step. Edit YAML, push, refresh.
 
-## Roadmap
+<!-- ## Roadmap
 
 - [x] OpenAPI 3.1 spec
 - [x] Self-review pass (0.1.2)
@@ -111,7 +111,7 @@ Redoc from the CDN. No build step. Edit YAML, push, refresh.
 - [ ] Idempotency middleware
 - [ ] Webhook delivery worker (HMAC signing + exponential backoff)
 - [ ] Fly.io deployment
-- [ ] Loom demo
+- [ ] Loom demo -->
 
 ## License
 
