@@ -3,7 +3,8 @@
 OpenAPI 3.1 spec for a virtual accounts platform on a master FBO with a
 double-entry ledger.
 
-**Rendered spec**: https://YOUR_USERNAME.github.io/virtual-accounts-api/
+**Rendered spec**:  https://rithikdshetty.github.io/virtual-accounts-api/
+
 
 **Status**: design + spec only. FastAPI implementation is the next step;
 see roadmap below. Currently on version 0.1.2 after a self-review pass
