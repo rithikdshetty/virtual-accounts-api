@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.3
+
+Documentation drift fixes caught during a re-read of the rendered spec.
+
+Fixed:
+- Top-level description no longer references the `Money` schema (which
+  was removed in 0.1.2). Money representation prose now describes the
+  actual pattern: integer minor units with currency on the parent
+  resource.
+- `POST /transfers` description no longer references the
+  `reverses_transfer_id` field (which was removed in 0.1.2 when reversals
+  moved to a dedicated endpoint). Now points to
+  `POST /transfers/{transfer_id}/reversal`.
+
+No schema or endpoint changes. Pure doc cleanup.
+
 ## 0.1.2
 
 After self-review. Mostly closing gaps that a careful reviewer would
