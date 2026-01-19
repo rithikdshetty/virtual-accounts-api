@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Virtual Accounts API
-  version: 0.1.2
+  version: 0.1.3
   summary: REST API for virtual accounts on a master FBO with a double-entry ledger.
   description: |
     The Virtual Accounts API exposes programmatic access to customer-facing
@@ -28,8 +28,9 @@ info:
     ## Money representation
 
     All amounts are integer minor units of the account currency (e.g. cents
-    for USD, pence for GBP). Floats are never used. Every amount field is
-    paired with an ISO 4217 currency code via the `Money` object.
+    for USD, pence for GBP). Floats are never used. Every monetary field is
+    accompanied by an ISO 4217 currency code on the parent resource (e.g.
+    `Account.currency`, `Transfer.currency`).
 
     ## Timestamps
 
@@ -312,8 +313,8 @@ paths:
       description: |
         Posts a transfer atomically. Source and destination must share the
         same currency. Insufficient funds returns 422 with code
-        `insufficient_funds`. Transfers cannot be edited; to undo, post a
-        reversal via this endpoint with `reverses_transfer_id` set.
+        `insufficient_funds`. Transfers cannot be edited; to undo, call
+        `POST /transfers/{transfer_id}/reversal`.
       operationId: createTransfer
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
