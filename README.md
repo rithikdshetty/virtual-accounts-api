@@ -7,7 +7,7 @@ double-entry ledger.
 
 
 **Status**: design + spec only. FastAPI implementation is the next step;
-see roadmap below. Currently on version 0.1.2 after a self-review pass
+see roadmap below. Currently on version 0.1.3 after a self-review pass
 (see CHANGELOG.md).
 
 ## What this is
