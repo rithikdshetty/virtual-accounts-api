@@ -1,17 +1,22 @@
 """
 Test fixtures.
 
-Two important things this file does:
-1. Overrides the FastAPI `get_db` dependency to point at the test database.
-2. Truncates all tables between tests for isolation. Each test gets a
-   clean slate.
+Key design decisions:
+1. The test client is configured so each HTTP request gets its OWN database
+   session, bound to the test database engine. This matches production
+   behavior where every request has its own session. Without this, the
+   concurrency tests would fail because SQLAlchemy sessions are not
+   thread-safe.
 
-Why truncate-between-tests instead of transactional rollback: the latter
-is faster but it breaks if the code under test uses nested transactions
-(SAVEPOINT). Our transfer logic will use nested transactions for
-idempotency, so we go with truncate.
+2. The `db_session` fixture provides a separate session for tests that
+   need to inspect or set up DB state directly (without going through HTTP).
+
+3. Between tests, we truncate all tables and re-seed the FBO cash row.
+
+4. Why truncate-between-tests instead of transactional rollback: rollback
+   breaks if code under test uses nested transactions. We avoid it.
 """
-import os
+import uuid
 from collections.abc import Generator
 
 import pytest
@@ -29,17 +34,16 @@ if not settings.test_database_url:
         "TEST_DATABASE_URL is not set. Add it to .env before running tests."
     )
 
-# Separate engine pointed at the test database.
 test_engine = create_engine(
     settings.test_database_url,
     pool_pre_ping=True,
     pool_recycle=1800,
+    pool_size=10,         # higher pool for concurrent tests
+    max_overflow=20,
 )
 TestSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
 
 
-# Tables in the order they should be truncated. Children before parents
-# would matter if we had FK constraints; we don't, so order is flexible.
 TABLES_TO_TRUNCATE = [
     "webhook_deliveries",
     "events",
@@ -53,18 +57,38 @@ TABLES_TO_TRUNCATE = [
 ]
 
 
-def _truncate_all(db: Session) -> None:
-    """Wipe data between tests. Schema stays."""
+def _truncate_and_reseed(db: Session) -> None:
+    """Wipe data between tests; re-seed FBO row."""
     for table in TABLES_TO_TRUNCATE:
         db.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
+    db.execute(
+        text(
+            """
+            INSERT INTO accounts (
+                id, customer_id, currency, status, livemode, metadata_json,
+                created_at, updated_at
+            )
+            VALUES (
+                'fbo_cash_USD', 'internal', 'USD', 'active', false,
+                '{"description": "Master FBO cash account for USD"}',
+                NOW(), NOW()
+            )
+            ON CONFLICT (id) DO NOTHING
+            """
+        )
+    )
     db.commit()
 
 
 @pytest.fixture
 def db_session() -> Generator[Session, None, None]:
-    """A SQLAlchemy session bound to the test DB. Truncated before each test."""
+    """
+    A session for the TEST to use directly (e.g. for invariant checks
+    or DB inspection). NOT shared with the HTTP client; the client uses
+    its own per-request sessions.
+    """
     db = TestSessionLocal()
-    _truncate_all(db)
+    _truncate_and_reseed(db)
     try:
         yield db
     finally:
@@ -74,15 +98,19 @@ def db_session() -> Generator[Session, None, None]:
 @pytest.fixture
 def client(db_session: Session) -> Generator[TestClient, None, None]:
     """
-    FastAPI test client. Overrides the get_db dependency so every endpoint
-    uses our test session instead of the real one.
+    FastAPI test client. Each HTTP request through the client gets a
+    FRESH session from the test engine, matching production behavior.
+    The db_session fixture is required as a dependency so truncation
+    happens before the test client is built (otherwise the client may
+    see stale state).
     """
 
     def override_get_db():
+        db = TestSessionLocal()
         try:
-            yield db_session
+            yield db
         finally:
-            pass  # session lifecycle managed by db_session fixture
+            db.close()
 
     app.dependency_overrides[get_db] = override_get_db
     try:
@@ -93,5 +121,69 @@ def client(db_session: Session) -> Generator[TestClient, None, None]:
 
 @pytest.fixture
 def auth_headers() -> dict[str, str]:
-    """Pre-built auth headers for authenticated requests."""
     return {"Authorization": f"Bearer {settings.api_key}"}
+
+
+@pytest.fixture
+def active_account(client, auth_headers):
+    created = client.post(
+        "/accounts",
+        json={"customer_id": "cus_test", "currency": "USD"},
+        headers=auth_headers,
+    ).json()
+    client.patch(
+        f"/accounts/{created['id']}",
+        json={"status": "active"},
+        headers=auth_headers,
+    )
+    return created
+
+
+@pytest.fixture
+def frozen_account(client, auth_headers):
+    created = client.post(
+        "/accounts",
+        json={"customer_id": "cus_frozen", "currency": "USD"},
+        headers=auth_headers,
+    ).json()
+    client.patch(
+        f"/accounts/{created['id']}",
+        json={"status": "active"},
+        headers=auth_headers,
+    )
+    client.patch(
+        f"/accounts/{created['id']}",
+        json={"status": "frozen"},
+        headers=auth_headers,
+    )
+    return created
+
+
+@pytest.fixture
+def fresh_idem_key():
+    return f"test-{uuid.uuid4()}"
+
+
+def assert_invariant_holds(db: Session, currency: str = "USD") -> None:
+    """
+    The defining invariant: sum of customer liabilities equals sum of
+    FBO cash entries for the same currency.
+    """
+    result = db.execute(
+        text(
+            """
+            SELECT
+              (SELECT COALESCE(SUM(amount), 0) FROM ledger_entries
+               WHERE account_id LIKE 'acct_%'
+                 AND currency = :ccy) AS liabilities,
+              (SELECT COALESCE(SUM(amount), 0) FROM ledger_entries
+               WHERE account_id = :fbo
+                 AND currency = :ccy) AS fbo_cash
+            """
+        ),
+        {"ccy": currency, "fbo": f"fbo_cash_{currency}"},
+    ).first()
+    assert result.liabilities == result.fbo_cash, (
+        f"INVARIANT VIOLATED: liabilities={result.liabilities} "
+        f"!= fbo_cash={result.fbo_cash}"
+    )
