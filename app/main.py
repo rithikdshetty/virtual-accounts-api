@@ -2,7 +2,7 @@ from fastapi import FastAPI
 
 from app.config import settings
 from app.lib.request_id import RequestIdMiddleware
-from app.routers import accounts, deposits, health
+from app.routers import accounts, deposits, health, transfers
 
 app = FastAPI(
     title="Virtual Accounts API",
@@ -19,3 +19,4 @@ app.add_middleware(RequestIdMiddleware)
 app.include_router(health.router)
 app.include_router(accounts.router)
 app.include_router(deposits.router)
+app.include_router(transfers.router)
