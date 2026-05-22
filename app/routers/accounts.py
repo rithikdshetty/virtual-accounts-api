@@ -106,7 +106,7 @@ def list_accounts(
     We fetch limit+1 rows to compute has_more without a separate count
     query (count(*) on a paginated query is O(n) and pointless).
     """
-    stmt = select(Account).order_by(Account.id)
+    stmt = select(Account).where(~Account.id.like("fbo_%")).order_by(Account.id)
 
     if starting_after:
         stmt = stmt.where(Account.id > starting_after)
@@ -140,6 +140,12 @@ def get_account(
     db: Annotated[Session, Depends(get_db)],
     api_key_hash: Annotated[str, Depends(require_api_key)],
 ) -> AccountResponse:
+    
+    if account_id.startswith("fbo_"):
+        raise _error(
+            request, status.HTTP_404_NOT_FOUND, "account_not_found", "Account not found"
+        )
+    
     account = db.get(Account, account_id)
     if not account:
         raise _error(
@@ -217,3 +223,122 @@ def update_account(
     db.commit()
     db.refresh(account)
     return AccountResponse.from_model(account)
+
+
+from sqlalchemy import func
+from app.models import LedgerEntry
+from app.schemas.deposit import BalanceResponse, TransactionListResponse, TransactionResponse
+
+
+@router.get(
+    "/{account_id}/balance",
+    response_model=BalanceResponse,
+    summary="Retrieve current balance",
+)
+def get_balance(
+    account_id: str,
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    api_key_hash: Annotated[str, Depends(require_api_key)],
+) -> BalanceResponse:
+    """
+    Computes balance from the ledger in real time. No materialized
+    balance column; the ledger is the source of truth.
+
+    available = posted - pending withdrawals (none in v0.1, so equal)
+    posted    = SUM of all ledger entries on this account
+
+    For v0.1 we return the same value for both because we don't yet
+    have pending withdrawals. Phase 7 will add withdrawal logic and
+    differentiate available from posted.
+    """
+    account = db.get(Account, account_id)
+    if not account:
+        raise _error(
+            request, status.HTTP_404_NOT_FOUND, "account_not_found", "Account not found"
+        )
+
+    total = db.execute(
+        select(func.coalesce(func.sum(LedgerEntry.amount), 0)).where(
+            LedgerEntry.account_id == account_id
+        )
+    ).scalar_one()
+
+    from datetime import datetime, timezone
+
+    return BalanceResponse(
+        account_id=account_id,
+        currency=account.currency,
+        available=total,
+        posted=total,
+        as_of=datetime.now(timezone.utc),
+    )
+
+
+@router.get(
+    "/{account_id}/transactions",
+    response_model=TransactionListResponse,
+    summary="List account transactions",
+)
+def list_transactions(
+    account_id: str,
+    request: Request,
+    db: Annotated[Session, Depends(get_db)],
+    api_key_hash: Annotated[str, Depends(require_api_key)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 25,
+    starting_after: Annotated[str | None, Query()] = None,
+) -> TransactionListResponse:
+    """
+    Lists ledger entries for this account, ordered by posted_at descending.
+    Each entry includes the running balance after that entry.
+    """
+    account = db.get(Account, account_id)
+    if not account:
+        raise _error(
+            request, status.HTTP_404_NOT_FOUND, "account_not_found", "Account not found"
+        )
+
+    stmt = (
+        select(LedgerEntry)
+        .where(LedgerEntry.account_id == account_id)
+        .order_by(LedgerEntry.posted_at.desc(), LedgerEntry.id.desc())
+    )
+    if starting_after:
+        stmt = stmt.where(LedgerEntry.id < starting_after)
+    stmt = stmt.limit(limit + 1)
+
+    rows = list(db.execute(stmt).scalars())
+    has_more = len(rows) > limit
+    if has_more:
+        rows = rows[:limit]
+
+    # Compute balance_after for each entry. Cheap for small pages.
+    transactions = []
+    for entry in rows:
+        running = db.execute(
+            select(func.coalesce(func.sum(LedgerEntry.amount), 0)).where(
+                LedgerEntry.account_id == account_id,
+                LedgerEntry.posted_at <= entry.posted_at,
+            )
+        ).scalar_one()
+        transactions.append(
+            TransactionResponse(
+                id=entry.id,
+                account_id=entry.account_id,
+                type=entry.entry_type,
+                amount=entry.amount,
+                currency=entry.currency,
+                balance_after=running,
+                related_transfer_id=entry.related_transfer_id,
+                related_deposit_id=entry.related_deposit_id,
+                related_withdrawal_id=entry.related_withdrawal_id,
+                description=entry.description,
+                posted_at=entry.posted_at,
+            )
+        )
+
+    return TransactionListResponse(
+        data=transactions,
+        has_more=has_more,
+        next_cursor=rows[-1].id if has_more and rows else None,
+    )
