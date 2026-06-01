@@ -1,8 +1,31 @@
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
 from app.config import settings
 from app.lib.request_id import RequestIdMiddleware
-from app.routers import accounts, deposits, health, transfers
+from app.lib.webhook_worker import start_worker, stop_worker
+from app.routers import accounts, deposits, events, health, transfers, webhook_endpoints
+
+
+# Configure root logger so our app logs show up alongside uvicorn's.
+# Production would use structured JSON logging (e.g. structlog or
+# python-json-logger). For local dev, a simple format suffices.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    datefmt="%H:%M:%S",
+)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start/stop the background webhook worker with the app lifecycle."""
+    start_worker()
+    yield
+    stop_worker()
+
 
 app = FastAPI(
     title="Virtual Accounts API",
@@ -12,6 +35,7 @@ app = FastAPI(
         "ledger. See https://github.com/rithikdshetty/virtual-accounts-api "
         "for the full OpenAPI spec and design notes."
     ),
+    lifespan=lifespan,
 )
 
 app.add_middleware(RequestIdMiddleware)
@@ -20,3 +44,5 @@ app.include_router(health.router)
 app.include_router(accounts.router)
 app.include_router(deposits.router)
 app.include_router(transfers.router)
+app.include_router(events.router)
+app.include_router(webhook_endpoints.router)
