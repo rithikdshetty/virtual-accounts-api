@@ -351,6 +351,21 @@
     return { url, method: current.method, headers, body: hasBody ? body : undefined };
   }
 
+  // A thrown fetch (TypeError "Failed to fetch") can't tell us *why* it failed:
+  // a cold-started server, a wrong Base URL, and an ad blocker
+  // (ERR_BLOCKED_BY_CLIENT) all surface identically here. So we enumerate the
+  // likely causes — the ad-blocker one is easy to miss because it works fine in
+  // incognito (extensions are disabled there).
+  function networkFailureMessage(err) {
+    return (
+      `Request failed: ${err.message}. Likely one of: ` +
+      `(1) a browser extension — an ad/privacy blocker like uBlock Origin — is blocking requests to this site ` +
+      `(click the extension and allowlist this page, or try an incognito window); ` +
+      `(2) the Base URL above is wrong; ` +
+      `(3) the service is asleep (free tier) — retry in ~30s.`
+    );
+  }
+
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     if (!apiKey()) { renderError("Set your API key in the bar above first."); return; }
@@ -374,7 +389,7 @@
       try { json = text ? JSON.parse(text) : null; } catch { /* non-JSON */ }
       renderResponse(res, json, text, ms, req);
     } catch (err) {
-      renderError(`Network error: ${err.message}. Check the Base URL and that the service is awake.`);
+      renderError(networkFailureMessage(err));
     } finally {
       sendBtn.classList.remove("loading");
       sendBtn.querySelector(".send-label").textContent = "Send request";
@@ -498,7 +513,7 @@
       reqPreview.textContent = res.ok ? `Healthy · v${j.version || "?"}` : "Unhealthy";
     } catch (err) {
       connDot.className = "conn-dot bad";
-      reqPreview.textContent = `Unreachable: ${err.message} — check the Base URL; if it's correct the service may be asleep (retry in ~30s).`;
+      reqPreview.textContent = `Unreachable: ${err.message} — an ad blocker (uBlock Origin) may be blocking this site; allowlist it or use incognito. Otherwise check the Base URL, or the service may be asleep (retry in ~30s).`;
     }
   });
 
