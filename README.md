@@ -5,8 +5,9 @@ double-entry ledger. Issues virtual accounts to end customers, tracks
 balances as liability positions, and keeps every movement provable through
 paired journal entries.
 
-**Live API**: https://virtual-accounts-api.onrender.com
-**Interactive docs**: https://virtual-accounts-api.onrender.com/docs
+**Live site**: https://virtual-accounts-api.onrender.com
+**Interactive console**: https://virtual-accounts-api.onrender.com/console
+**Interactive docs (Swagger)**: https://virtual-accounts-api.onrender.com/docs
 **Rendered OpenAPI spec**: https://rithikdshetty.github.io/virtual-accounts-api/
 
 > Note: the live API runs on a free tier that sleeps after inactivity. The
@@ -71,6 +72,43 @@ curl -s $BASE/accounts/$ACCT/balance -H "Authorization: Bearer $KEY"
 
 Or just open the interactive docs and click "Authorize" with the key:
 https://virtual-accounts-api.onrender.com/docs
+
+## Web app
+
+The repo ships a static frontend that FastAPI serves itself, so the site and
+the API share **one origin** (no CORS) and **one deploy**. Static files live
+in `web/` and are mounted last in `app/main.py` — API routers always take
+precedence over the static mount.
+
+- **Landing page** (`/`, `web/index.html`) — the marketing/overview page:
+  hero, feature tour, the ledger-flow explainer, quickstart, the account and
+  external-rail state machines, and an endpoint reference.
+- **Interactive console** (`/console`, `web/console.html` + `assets/js/console.js`)
+  — a declarative client where each of the 18 endpoints is described as data
+  and rendered into a form. It does bearer auth, auto-generates
+  `Idempotency-Key`s (with a regenerate button to test idempotent replay),
+  formats money to/from minor units, renders RFC 7807 errors, and surfaces
+  copyable resource-ID chips so you can chain calls.
+
+Both run entirely against the configured **Base URL** (defaults to the page's
+own origin) — set your API key and Base URL once in the top bar and they
+persist in `localStorage`.
+
+A few robustness behaviors worth knowing:
+
+- **Base URL self-heal.** A stale saved Base URL that can't work from the
+  current page — an `http://` URL on an HTTPS page (mixed content), or a
+  `localhost` URL on a remote deploy — is discarded automatically and falls
+  back to the page origin.
+- **Ad blockers can block the connection probe.** The console's green/red
+  "Test" dot pings `/healthz`. Some privacy filter lists (e.g. EasyPrivacy,
+  via a `||onrender.com/health` rule) treat any `…onrender.com/health*` path
+  as a tracking beacon and block it, so the dot can show **red even when the
+  service is healthy** (`net::ERR_BLOCKED_BY_CLIENT`). This only affects the
+  health probe — the real API endpoints don't start with `/health`, so all
+  actual requests still work. If the dot is red: allowlist the page in your
+  blocker (uBlock Origin → power button), or use an incognito window
+  (extensions are disabled there). The console's error messages call this out.
 
 ## Architecture
 
