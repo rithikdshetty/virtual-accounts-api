@@ -6,12 +6,17 @@ from fastapi import FastAPI
 from app.config import settings
 from app.lib.request_id import RequestIdMiddleware
 from app.lib.webhook_worker import start_worker, stop_worker
-from app.routers import accounts, deposits, events, health, transfers, webhook_endpoints
+from app.routers import (
+    accounts,
+    deposits,
+    events,
+    health,
+    transfers,
+    webhook_endpoints,
+    withdrawals,
+)
 
 
-# Configure root logger so our app logs show up alongside uvicorn's.
-# Production would use structured JSON logging (e.g. structlog or
-# python-json-logger). For local dev, a simple format suffices.
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
@@ -21,7 +26,6 @@ logging.basicConfig(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Start/stop the background webhook worker with the app lifecycle."""
     start_worker()
     yield
     stop_worker()
@@ -44,5 +48,6 @@ app.include_router(health.router)
 app.include_router(accounts.router)
 app.include_router(deposits.router)
 app.include_router(transfers.router)
+app.include_router(withdrawals.router)
 app.include_router(events.router)
 app.include_router(webhook_endpoints.router)
