@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Virtual Accounts API — Ledger-grade money movement</title>
+  <meta name="description" content="A REST API for virtual accounts on a master FBO, backed by a double-entry ledger. Integer money, idempotency, row-locked transfers, signed webhooks." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/assets/css/styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💸</text></svg>" />
+</head>
+<body>
+
+  <!-- NAV -->
+  <nav class="nav" id="nav">
+    <div class="container nav-inner">
+      <a href="/" class="brand">
+        <span class="logo">V</span>
+        <span>Virtual&nbsp;Accounts<span style="color:var(--text-3)">API</span></span>
+      </a>
+      <div class="nav-links" id="navLinks">
+        <a href="#features">Features</a>
+        <a href="#ledger">Ledger</a>
+        <a href="#quickstart">Quickstart</a>
+        <a href="#lifecycle">Lifecycle</a>
+        <a href="#endpoints">API</a>
+      </div>
+      <div class="nav-cta">
+        <a href="/docs" class="btn btn-ghost btn-sm">API Docs</a>
+        <a href="/console" class="btn btn-primary btn-sm">Open Console →</a>
+      </div>
+      <button class="nav-toggle" id="navToggle" aria-label="Menu">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
+    </div>
+  </nav>
+
+  <!-- HERO -->
+  <header class="hero">
+    <div class="container">
+      <p class="eyebrow reveal"><span class="dot"></span> Live on Render · v0.1.2</p>
+      <h1 class="reveal" data-d="1">Money movement that<br><span class="gradient-text">always balances.</span></h1>
+      <p class="sub reveal" data-d="2">A REST API for virtual accounts on a single master FBO bank account. Balances are liability positions on an internal <strong>double-entry ledger</strong> — the one source of truth. Integer money, idempotent writes, row-locked transfers, signed webhooks.</p>
+      <div class="hero-actions reveal" data-d="3">
+        <a href="/console" class="btn btn-primary">Launch interactive console</a>
+        <a href="#quickstart" class="btn btn-ghost">Read the quickstart</a>
+      </div>
+      <div class="reveal" data-d="4">
+        <div class="invariant">
+          <span class="c">// the system invariant, checked after every commit</span>
+          <br>
+          <b class="liab">Σ customer liabilities</b>
+          <span class="eq">==</span>
+          <b class="fbo">Σ FBO cash</b>
+          <span class="eq">&nbsp;·&nbsp;per currency, always</span>
+        </div>
+      </div>
+
+      <div class="stats">
+        <div class="stat reveal" data-d="1"><div class="num gradient-text">18</div><div class="lbl">REST endpoints</div></div>
+        <div class="stat reveal" data-d="2"><div class="num gradient-text">2-entry</div><div class="lbl">ledger per move</div></div>
+        <div class="stat reveal" data-d="3"><div class="num gradient-text">24h</div><div class="lbl">idempotency window</div></div>
+        <div class="stat reveal" data-d="4"><div class="num gradient-text">7</div><div class="lbl">webhook event types</div></div>
+      </div>
+    </div>
+  </header>
+
+  <!-- FEATURES -->
+  <section id="features">
+    <div class="container">
+      <div class="section-head reveal">
+        <h2>Built like a payments backend should be</h2>
+        <p>Every design decision optimizes for correctness under concurrency and money that can never silently vanish.</p>
+      </div>
+      <div class="features">
+        <div class="card reveal" data-d="1"><div class="ic">⚖️</div><h3>Double-entry ledger</h3><p>Every movement writes paired entries that net to zero. Balances are derived from <code>SUM(entries)</code> — there is no balance column to drift.</p></div>
+        <div class="card reveal" data-d="2"><div class="ic">🔢</div><h3>Integer minor units</h3><p>Amounts are integers (cents, pence) plus an ISO 4217 code. Floats never touch money, so rounding errors can't accrue.</p></div>
+        <div class="card reveal" data-d="3"><div class="ic">🔁</div><h3>Idempotent writes</h3><p>Every money-moving POST takes an <code>Idempotency-Key</code>. Retries replay the original response for 24h — no double charges.</p></div>
+        <div class="card reveal" data-d="1"><div class="ic">🔒</div><h3>Row-locked transfers</h3><p><code>SELECT … FOR UPDATE</code> serializes concurrent debits against the same account, so the balance check is always atomic.</p></div>
+        <div class="card reveal" data-d="2"><div class="ic">📡</div><h3>Signed webhooks</h3><p>HMAC-SHA256 in Stripe's <code>t=…,v1=…</code> format, exponential-backoff retries up to 24h, then dead-lettering.</p></div>
+        <div class="card reveal" data-d="3"><div class="ic">📜</div><h3>Replayable events</h3><p>A pull-based <code>/events</code> log with 30-day retention lets consumers recover from outages without losing a beat.</p></div>
+        <div class="card reveal" data-d="1"><div class="ic">🧭</div><h3>Cursor pagination</h3><p>Stable, O(log n) cursors instead of offsets — pages don't shift when new rows are inserted mid-scan.</p></div>
+        <div class="card reveal" data-d="2"><div class="ic">🚦</div><h3>RFC 7807 errors</h3><p><code>problem+json</code> with a stable <code>code</code> field. Clients branch on the code, never on human-readable prose.</p></div>
+        <div class="card reveal" data-d="3"><div class="ic">🏷️</div><h3>Prefixed ULID IDs</h3><p><code>acct_</code>, <code>tfr_</code>, <code>dep_</code>… time-sortable IDs that read cleanly in logs and catch mismatches early.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- LEDGER / MONEY FLOW -->
+  <section id="ledger" style="background: linear-gradient(180deg, transparent, rgba(129,140,248,0.04), transparent);">
+    <div class="container">
+      <div class="section-head reveal">
+        <h2>One FBO. Many virtual accounts.</h2>
+        <p>Customer funds pool in a single master For-Benefit-Of account. Who owns what is tracked entirely on the ledger as liability positions.</p>
+      </div>
+      <div class="flow reveal" data-d="1">
+        <div class="flow-node"><div class="t">Customer A</div><div class="v liab" style="color:var(--c1)">+$150.00</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-node ledger"><div class="t">Double-entry ledger</div><div class="v">debit + credit<br>net = $0.00</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-node"><div class="t">Master FBO cash</div><div class="v" style="color:var(--c4)">$150.00</div></div>
+      </div>
+      <p class="reveal" data-d="2" style="text-align:center;color:var(--text-3);margin-top:28px;font-family:var(--mono);font-size:0.88rem;">A transfer locks both accounts, posts two entries, and emits <code>transfer.posted</code> — all inside one DB transaction.</p>
+    </div>
+  </section>
+
+  <!-- QUICKSTART -->
+  <section id="quickstart">
+    <div class="container">
+      <div class="section-head reveal">
+        <h2>Move money in three calls</h2>
+        <p>Authenticate with a bearer token, create an account, fund it, then transfer. Pick your language.</p>
+      </div>
+      <div class="code-wrap reveal" data-d="1">
+        <div class="code-head">
+          <div class="code-tabs">
+            <button class="code-tab active" data-lang="curl">cURL</button>
+            <button class="code-tab" data-lang="js">JavaScript</button>
+            <button class="code-tab" data-lang="py">Python</button>
+          </div>
+          <button class="code-copy" id="copyBtn">Copy</button>
+        </div>
+
+        <div class="code-pane active" data-lang="curl"><pre><span class="c"># 1. Create an account (Idempotency-Key required on every write)</span>
+curl -X POST https://virtual-accounts-api.onrender.com/accounts \
+  -H <span class="s">"Authorization: Bearer $API_KEY"</span> \
+  -H <span class="s">"Idempotency-Key: $(uuidgen)"</span> \
+  -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="s">'{"customer_id": "cus_demo", "currency": "USD"}'</span>
+
+<span class="c"># 2. Fund it with a deposit (amount in minor units → 15000 = $150.00)</span>
+curl -X POST https://virtual-accounts-api.onrender.com/deposits \
+  -H <span class="s">"Authorization: Bearer $API_KEY"</span> \
+  -H <span class="s">"Idempotency-Key: $(uuidgen)"</span> \
+  -d <span class="s">'{"account_id":"acct_…","amount":15000,"currency":"USD","rail":"ach"}'</span>
+
+<span class="c"># 3. Transfer between two virtual accounts (atomic, row-locked)</span>
+curl -X POST https://virtual-accounts-api.onrender.com/transfers \
+  -H <span class="s">"Authorization: Bearer $API_KEY"</span> \
+  -H <span class="s">"Idempotency-Key: $(uuidgen)"</span> \
+  -d <span class="s">'{"source_account_id":"acct_A","destination_account_id":"acct_B","amount":5000}'</span></pre></div>
+
+        <div class="code-pane" data-lang="js"><pre><span class="k">const</span> BASE = <span class="s">"https://virtual-accounts-api.onrender.com"</span>;
+<span class="k">const</span> headers = {
+  <span class="s">"Authorization"</span>: <span class="s">`Bearer ${API_KEY}`</span>,
+  <span class="s">"Idempotency-Key"</span>: crypto.<span class="n">randomUUID</span>(),
+  <span class="s">"Content-Type"</span>: <span class="s">"application/json"</span>,
+};
+
+<span class="c">// Create an account</span>
+<span class="k">const</span> account = <span class="k">await</span> <span class="n">fetch</span>(<span class="s">`${BASE}/accounts`</span>, {
+  method: <span class="s">"POST"</span>, headers,
+  body: <span class="n">JSON</span>.stringify({ customer_id: <span class="s">"cus_demo"</span>, currency: <span class="s">"USD"</span> }),
+}).<span class="n">then</span>(r => r.<span class="n">json</span>());
+
+<span class="c">// Transfer $50.00 (amounts are integer minor units)</span>
+<span class="k">await</span> <span class="n">fetch</span>(<span class="s">`${BASE}/transfers`</span>, {
+  method: <span class="s">"POST"</span>,
+  headers: { ...headers, <span class="s">"Idempotency-Key"</span>: crypto.<span class="n">randomUUID</span>() },
+  body: <span class="n">JSON</span>.stringify({ source_account_id: <span class="s">"acct_A"</span>, destination_account_id: <span class="s">"acct_B"</span>, amount: <span class="n">5000</span> }),
+});</pre></div>
+
+        <div class="code-pane" data-lang="py"><pre><span class="k">import</span> httpx, uuid
+
+BASE = <span class="s">"https://virtual-accounts-api.onrender.com"</span>
+<span class="k">def</span> <span class="n">headers</span>():
+    <span class="k">return</span> {
+        <span class="s">"Authorization"</span>: <span class="s">f"Bearer {API_KEY}"</span>,
+        <span class="s">"Idempotency-Key"</span>: <span class="n">str</span>(uuid.<span class="n">uuid4</span>()),
+    }
+
+<span class="c"># Create an account</span>
+account = httpx.<span class="n">post</span>(<span class="s">f"{BASE}/accounts"</span>, headers=<span class="n">headers</span>(),
+    json={<span class="s">"customer_id"</span>: <span class="s">"cus_demo"</span>, <span class="s">"currency"</span>: <span class="s">"USD"</span>}).<span class="n">json</span>()
+
+<span class="c"># Transfer $50.00 between virtual accounts</span>
+httpx.<span class="n">post</span>(<span class="s">f"{BASE}/transfers"</span>, headers=<span class="n">headers</span>(),
+    json={<span class="s">"source_account_id"</span>: <span class="s">"acct_A"</span>,
+          <span class="s">"destination_account_id"</span>: <span class="s">"acct_B"</span>, <span class="s">"amount"</span>: <span class="n">5000</span>})</pre></div>
+      </div>
+      <p class="reveal" data-d="2" style="text-align:center;margin-top:28px;">
+        <a href="/console" class="btn btn-primary">Try it live in the console →</a>
+      </p>
+    </div>
+  </section>
+
+  <!-- LIFECYCLE / STATE MACHINES -->
+  <section id="lifecycle" style="background: linear-gradient(180deg, transparent, rgba(34,211,238,0.04), transparent);">
+    <div class="container">
+      <div class="section-head reveal">
+        <h2>Explicit state machines</h2>
+        <p>Every resource has a constrained lifecycle. Illegal transitions are rejected, not silently absorbed.</p>
+      </div>
+      <div class="machines">
+        <div class="machine reveal" data-d="1">
+          <h3>Account</h3>
+          <div class="states">
+            <span class="state pending">pending</span><span class="arr">→</span>
+            <span class="state active">active</span><span class="arr">⇄</span>
+            <span class="state frozen">frozen</span><span class="arr">→</span>
+            <span class="state closed">closed</span>
+          </div>
+          <p style="color:var(--text-3);font-size:0.88rem;margin:16px 0 0;">Closing requires a zero balance. <code>closed</code> is terminal.</p>
+        </div>
+        <div class="machine reveal" data-d="2">
+          <h3>Transfer</h3>
+          <div class="states">
+            <span class="state posted">posted</span><span class="arr">|</span>
+            <span class="state failed">failed</span><span class="arr">|</span>
+            <span class="state reversed">reversed</span>
+          </div>
+          <p style="color:var(--text-3);font-size:0.88rem;margin:16px 0 0;">Synchronous & atomic. Reversals are a dedicated endpoint, full-value only.</p>
+        </div>
+        <div class="machine reveal" data-d="1">
+          <h3>Deposit</h3>
+          <div class="states">
+            <span class="state pending">pending</span><span class="arr">→</span>
+            <span class="state posted">posted</span><span class="arr">|</span>
+            <span class="state failed">failed</span>
+          </div>
+          <p style="color:var(--text-3);font-size:0.88rem;margin:16px 0 0;">External rail in (ACH · wire · RTP). Credits on <code>posted</code>.</p>
+        </div>
+        <div class="machine reveal" data-d="2">
+          <h3>Withdrawal</h3>
+          <div class="states">
+            <span class="state pending">pending</span><span class="arr">→</span>
+            <span class="state posted">posted</span><span class="arr">|</span>
+            <span class="state failed">failed</span>
+          </div>
+          <p style="color:var(--text-3);font-size:0.88rem;margin:16px 0 0;">Debits immediately (funds reserved), then settles async.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ENDPOINTS -->
+  <section id="endpoints">
+    <div class="container">
+      <div class="section-head reveal">
+        <h2>The complete surface</h2>
+        <p>Eighteen endpoints across six resources. Every one is reachable from the live console.</p>
+      </div>
+      <div class="endpoints reveal" data-d="1">
+        <div class="ep-group-title">🏦 Accounts</div>
+        <div class="ep"><span class="verb post">POST</span><span class="path">/accounts</span><span class="desc">Create an account</span></div>
+        <div class="ep"><span class="verb get">GET</span><span class="path">/accounts</span><span class="desc">List with cursor pagination</span></div>
+        <div class="ep"><span class="verb get">GET</span><span class="path">/accounts/{id}</span><span class="desc">Retrieve one account</span></div>
+        <div class="ep"><span class="verb patch">PATCH</span><span class="path">/accounts/{id}</span><span class="desc">Update status / metadata</span></div>
+        <div class="ep"><span class="verb get">GET</span><span class="path">/accounts/{id}/balance</span><span class="desc">Available & posted balance</span></div>
+        <div class="ep"><span class="verb get">GET</span><span class="path">/accounts/{id}/transactions</span><span class="desc">Ledger movement history</span></div>
+
+        <div class="ep-group-title">🔁 Transfers</div>
+        <div class="ep"><span class="verb post">POST</span><span class="path">/transfers</span><span class="desc">Move funds between accounts</span></div>
+        <div class="ep"><span class="verb get">GET</span><span class="path">/transfers</span><span class="desc">List / filter transfers</span></div>
+        <div class="ep"><span class="verb get">GET</span><span class="path">/transfers/{id}</span><span class="desc">Retrieve one transfer</span></div>
+        <div class="ep"><span class="verb post">POST</span><span class="path">/transfers/{id}/reversal</span><span class="desc">Reverse a posted transfer</span></div>
+
+        <div class="ep-group-title">💵 Deposits &amp; Withdrawals</div>
+        <div class="ep"><span class="verb post">POST</span><span class="path">/deposits</span><span class="desc">Record inbound funds</span></div>
+        <div class="ep"><span class="verb get">GET</span><span class="path">/deposits/{id}</span><span class="desc">Retrieve one deposit</span></div>
+        <div class="ep"><span class="verb post">POST</span><span class="path">/withdrawals</span><span class="desc">Initiate outbound payment</span></div>
+        <div class="ep"><span class="verb get">GET</span><span class="path">/withdrawals/{id}</span><span class="desc">Retrieve one withdrawal</span></div>
+
+        <div class="ep-group-title">📡 Events &amp; Webhooks</div>
+        <div class="ep"><span class="verb get">GET</span><span class="path">/events</span><span class="desc">Replayable event log</span></div>
+        <div class="ep"><span class="verb get">GET</span><span class="path">/events/{id}</span><span class="desc">Retrieve one event</span></div>
+        <div class="ep"><span class="verb post">POST</span><span class="path">/webhook_endpoints</span><span class="desc">Register a push endpoint</span></div>
+        <div class="ep"><span class="verb get">GET</span><span class="path">/webhook_endpoints</span><span class="desc">List endpoints</span></div>
+        <div class="ep"><span class="verb delete">DELETE</span><span class="path">/webhook_endpoints/{id}</span><span class="desc">Delete an endpoint</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section style="padding-top:0;">
+    <div class="container">
+      <div class="cta-band reveal">
+        <h2>Start moving money in seconds</h2>
+        <p>Open the interactive console, paste your API key, and exercise every endpoint against the live service — no setup required.</p>
+        <div class="hero-actions" style="margin-bottom:0;">
+          <a href="/console" class="btn btn-primary">Open the console</a>
+          <a href="/docs" class="btn btn-ghost">Browse the API reference</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FOOTER -->
+  <footer>
+    <div class="container foot-inner">
+      <div class="brand"><span class="logo">V</span><span>Virtual Accounts API</span></div>
+      <div class="foot-links">
+        <a href="/console">Console</a>
+        <a href="/docs">Swagger</a>
+        <a href="/redoc">ReDoc</a>
+        <a href="/healthz">Status</a>
+        <a href="https://github.com/rithikdshetty/virtual-accounts-api" target="_blank" rel="noopener">GitHub</a>
+      </div>
+      <div style="font-size:0.85rem;">Built with FastAPI · A double-entry ledger demo</div>
+    </div>
+  </footer>
+
+  <script src="/assets/js/main.js"></script>
+</body>
+</html>

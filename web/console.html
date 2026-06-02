@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Console — Virtual Accounts API</title>
+  <meta name="description" content="Interactive console for the Virtual Accounts API. Exercise every endpoint live against the deployed service." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/assets/css/styles.css" />
+  <link rel="stylesheet" href="/assets/css/console.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💸</text></svg>" />
+</head>
+<body class="console-body">
+
+  <!-- CONFIG BAR -->
+  <div class="config-bar">
+    <div class="container config-inner">
+      <a href="/" class="brand">
+        <span class="logo">V</span>
+        <span>Console</span>
+      </a>
+      <div class="field-inline">
+        <label for="cfgBase">Base URL</label>
+        <input id="cfgBase" class="config-input" spellcheck="false" placeholder="https://…onrender.com" />
+      </div>
+      <div class="field-inline">
+        <label for="cfgKey">API Key</label>
+        <input id="cfgKey" class="config-input" type="password" spellcheck="false" placeholder="Bearer token" />
+      </div>
+      <button id="testConn" class="btn btn-ghost btn-sm">
+        <span class="conn-dot" id="connDot"></span> Test
+      </button>
+      <a href="/docs" class="btn btn-ghost btn-sm">Docs</a>
+    </div>
+  </div>
+
+  <div class="container console-grid">
+    <!-- SIDEBAR -->
+    <aside class="side" id="sidebar"><!-- populated by JS --></aside>
+
+    <!-- OPERATION PANEL -->
+    <main class="op-panel">
+      <div class="op-header">
+        <span class="verb" id="opVerb">GET</span>
+        <h2 id="opTitle">Loading…</h2>
+      </div>
+      <div class="op-route"><span id="opRoute"></span></div>
+      <p class="op-desc" id="opDesc"></p>
+
+      <div class="panel-card">
+        <form id="opForm" autocomplete="off">
+          <div class="form-grid" id="formFields"></div>
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary" id="sendBtn">
+              <span class="spinner"></span><span class="send-label">Send request</span>
+            </button>
+            <span id="reqPreview" class="resp-meta"></span>
+          </div>
+        </form>
+      </div>
+
+      <!-- RESPONSE -->
+      <div class="response">
+        <div class="resp-head" id="respHead" style="display:none;">
+          <span class="status-badge" id="statusBadge"></span>
+          <span class="resp-meta" id="respMeta"></span>
+          <button class="code-copy" id="respCopy" style="margin-left:auto;">Copy JSON</button>
+        </div>
+        <div id="respContainer">
+          <div class="resp-empty">Configure your key above, fill the form, and send a request. The response will appear here.</div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="/assets/js/console.js"></script>
+</body>
+</html>
