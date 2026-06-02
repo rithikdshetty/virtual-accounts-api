@@ -1,0 +1,26 @@
+# Render Blueprint. Defines the web service.
+# Docs: https://render.com/docs/blueprint-spec
+#
+# Deploy by connecting this repo in the Render dashboard and selecting
+# "Blueprint". Render reads this file and provisions the service.
+#
+# Environment variables (DATABASE_URL, API_KEY) are set as secrets in the
+# Render dashboard, NOT here, so they never touch the repo.
+
+services:
+  - type: web
+    name: virtual-accounts-api
+    runtime: python
+    plan: free
+    buildCommand: "pip install -e ."
+    startCommand: "./start.sh"
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.5"
+      - key: DATABASE_URL
+        sync: false   # set manually in dashboard (secret)
+      - key: API_KEY
+        sync: false   # set manually in dashboard (secret)
+      - key: LIVEMODE
+        value: "false"
