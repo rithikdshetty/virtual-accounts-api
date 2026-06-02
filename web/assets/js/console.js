@@ -13,7 +13,24 @@
   const cfgBase = document.getElementById("cfgBase");
   const cfgKey = document.getElementById("cfgKey");
 
-  cfgBase.value = localStorage.getItem(LS_BASE) || window.location.origin;
+  // A saved base from earlier testing can silently break the console: an
+  // http:// base on an https:// page is blocked as mixed content, and a stale
+  // localhost base never reaches a remote deploy. Discard such values and fall
+  // back to the page's own origin (which is always same-origin and reachable).
+  function sanitizedSavedBase() {
+    const saved = localStorage.getItem(LS_BASE);
+    if (!saved) return null;
+    let u;
+    try { u = new URL(saved); } catch { return null; }
+    const isLocal = (h) => /^(localhost|127\.|0\.0\.0\.0|\[::1\])/.test(h);
+    if (window.location.protocol === "https:" && u.protocol === "http:") return null;
+    if (isLocal(u.hostname) && !isLocal(window.location.hostname)) return null;
+    return saved;
+  }
+
+  const validSavedBase = sanitizedSavedBase();
+  if (!validSavedBase && localStorage.getItem(LS_BASE)) localStorage.removeItem(LS_BASE);
+  cfgBase.value = validSavedBase || window.location.origin;
   cfgKey.value = localStorage.getItem(LS_KEY) || "";
   cfgBase.addEventListener("change", () => localStorage.setItem(LS_BASE, cfgBase.value.trim()));
   cfgKey.addEventListener("change", () => localStorage.setItem(LS_KEY, cfgKey.value.trim()));
@@ -479,9 +496,9 @@
       const j = await res.json();
       connDot.className = "conn-dot " + (res.ok ? "ok" : "bad");
       reqPreview.textContent = res.ok ? `Healthy · v${j.version || "?"}` : "Unhealthy";
-    } catch {
+    } catch (err) {
       connDot.className = "conn-dot bad";
-      reqPreview.textContent = "Unreachable (service may be asleep — retry in ~30s)";
+      reqPreview.textContent = `Unreachable: ${err.message} — check the Base URL; if it's correct the service may be asleep (retry in ~30s).`;
     }
   });
 
