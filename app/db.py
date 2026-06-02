@@ -13,6 +13,13 @@ from app.config import settings
 # pool_pre_ping handles Neon's idle connection drops; without it, the first
 # query after a few minutes of inactivity fails. pool_recycle forces fresh
 # connections every 30 min as belt-and-suspenders.
+#
+# prepare_threshold=None disables psycopg3 server-side prepared statements.
+# This is REQUIRED when connecting through Neon's pooled endpoint (PgBouncer
+# in transaction mode), which does not support session-level prepared
+# statements. Without this, queries intermittently fail with
+# "prepared statement already exists" once connections are reused across
+# transactions. Harmless on the direct endpoint too, so we set it always.
 
 engine = create_engine(
     settings.database_url,
@@ -20,6 +27,7 @@ engine = create_engine(
     pool_recycle=1800,
     pool_size=5,
     max_overflow=10,
+    connect_args={"prepare_threshold": None},
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
